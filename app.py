@@ -3,227 +3,236 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 import statsmodels.api as sm
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from statsmodels.formula.api import ols
+from io import StringIO
 
-# --- 页面配置 ---
-st.set_page_config(page_title="智能统计助手", layout="wide")
+# --- 0. 页面配置 (低调模式) ---
+st.set_page_config(page_title="统计分析工具", layout="wide")
+st.title("统计分析工具") # 标题改为通用名称
 
-st.title("📊 智能统计分析与方法推荐 App")
-st.markdown("""
-本工具支持 **2-4组数据** 的 **单因素/双因素** 分析。
-流程：上传数据 -> 自动进行正态性/方差齐性检验 -> 生成诊断图 (QQ图/残差图) -> **推荐统计方法**。
-""")
+# --- 工具函数：解析手动输入数据 ---
+def parse_manual_input(text_input, sep_char):
+    try:
+        data = StringIO(text_input)
+        if sep_char == '逗号 (CSV)':
+            df = pd.read_csv(data)
+        elif sep_char == '制表符 (Excel复制)':
+            df = pd.read_csv(data, sep='\t')
+        elif sep_char == '空格':
+            df = pd.read_csv(data, delim_whitespace=True)
+        return df
+    except Exception as e:
+        return None
 
-# --- 侧边栏：数据上传与设置 ---
-st.sidebar.header("1. 数据设置")
-uploaded_file = st.sidebar.file_uploader("上传 Excel 或 CSV 文件", type=["xlsx", "csv"])
+# --- 侧边栏：数据来源 ---
+st.sidebar.header("1. 数据输入")
+input_method = st.sidebar.radio("选择数据来源", ["上传文件", "手动输入/粘贴"])
 
-# 示例数据生成（方便用户测试）
-if st.sidebar.button("使用示例数据测试"):
-    # 生成一个模拟的单因素3组数据
-    np.random.seed(42)
-    df_demo = pd.DataFrame({
-        'Group': ['A']*20 + ['B']*20 + ['C']*20,
-        'Value': np.concatenate([np.random.normal(10, 2, 20), np.random.normal(12, 2.5, 20), np.random.normal(11, 2, 20)])
-    })
-    uploaded_file = df_demo
+df = None
 
-def load_data(file):
-    if isinstance(file, pd.DataFrame):
-        return file
-    if file.name.endswith('.csv'):
-        return pd.read_csv(file)
-    else:
-        return pd.read_excel(file)
+if input_method == "上传文件":
+    uploaded_file = st.sidebar.file_uploader("支持 xlsx, csv", type=["xlsx", "csv"])
+    if uploaded_file:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+
+elif input_method == "手动输入/粘贴":
+    st.sidebar.info("请在首行包含列名")
+    sep_mode = st.sidebar.selectbox("分隔符格式", ["制表符 (Excel复制)", "逗号 (CSV)", "空格"])
+    text_data = st.sidebar.text_area("在此粘贴数据", height=150, 
+                                     placeholder="Group\tValue\nA\t10.5\nA\t12.1\nB\t15.3\n...")
+    if text_data:
+        df = parse_manual_input(text_data, sep_mode)
 
 # --- 主逻辑 ---
-if uploaded_file is not None:
-    df = load_data(uploaded_file)
+if df is not None:
     st.write("### 数据预览", df.head())
-
-    # 模式选择
-    analysis_type = st.sidebar.radio("选择分析类型", ["单因素分析 (One-Way)", "双因素分析 (Two-Way)"])
-    
-    # 变量选择
     cols = df.columns.tolist()
-    num_col = st.sidebar.selectbox("选择数值变量 (Dependent Variable)", cols, index=len(cols)-1)
+
+    # --- 变量设置 ---
+    st.sidebar.header("2. 变量设置")
     
-    if analysis_type == "单因素分析 (One-Way)":
-        cat_col = st.sidebar.selectbox("选择分组变量 (Factor)", [c for c in cols if c != num_col])
-        groups = df[cat_col].unique()
-        st.write(f"**检测到分组:** {groups} (共 {len(groups)} 组)")
-        
-        if len(groups) < 2:
-            st.error("分组数量必须大于等于 2！")
-            st.stop()
+    # 智能推断：如果某一列是数值，设为Y；如果某一列不仅数值且重复值多，可能是分组
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = [c for c in cols if c not in num_cols] + [c for c in num_cols if df[c].nunique() < 10] # 允许数值型作为分类变量
 
-        # --- 1. 数据准备 ---
-        group_data = [df[df[cat_col] == g][num_col].dropna() for g in groups]
-        
-        # --- 2. 假设检验 (Assumption Checks) ---
-        st.header("2. 假设检验与诊断图")
-        
-        col1, col2 = st.columns(2)
-        
-        # A. 正态性检验 (Shapiro-Wilk)
-        normality_results = {}
-        all_normal = True
-        with col1:
-            st.subheader("正态性检验 (Shapiro-Wilk)")
-            st.info("P > 0.05 表示符合正态分布")
-            for i, g_name in enumerate(groups):
-                stat, p = stats.shapiro(group_data[i])
-                is_norm = p > 0.05
-                if not is_norm: all_normal = False
-                normality_results[g_name] = is_norm
-                st.write(f"- **{g_name}**: P-value={p:.4f} ({'正态' if is_norm else '非正态'})")
+    # 用户选择分析目标
+    analysis_mode = st.sidebar.selectbox("分析目标", ["数值变量差异比较 (T检验/ANOVA/非参数)", "分类变量关联分析 (卡方/Fisher)"])
 
-        # B. 方差齐性检验 (Levene test)
-        with col2:
-            st.subheader("方差齐性检验 (Levene)")
-            st.info("P > 0.05 表示方差齐")
-            stat_lev, p_lev = stats.levene(*group_data)
-            is_homoscedastic = p_lev > 0.05
-            st.write(f"- **整体**: P-value={p_lev:.4f} ({'方差齐' if is_homoscedastic else '方差不齐'})")
-
-        # C. 可视化诊断
-        st.subheader("可视化诊断")
-        tab1, tab2, tab3 = st.tabs(["QQ图", "残差图", "箱线图"])
+    if analysis_mode == "数值变量差异比较 (T检验/ANOVA/非参数)":
+        target_col = st.sidebar.selectbox("因变量 (Y, 数值型)", num_cols)
+        group_col = st.sidebar.selectbox("分组变量 (X, 分类型)", [c for c in cols if c != target_col])
         
-        with tab1:
-            # QQ Plot
-            fig_qq, axes = plt.subplots(1, len(groups), figsize=(15, 5))
-            if len(groups) == 1: axes = [axes] # Handle single plot case
-            for i, g_name in enumerate(groups):
-                sm.qqplot(group_data[i], line='s', ax=axes[i])
-                axes[i].set_title(f"QQ Plot: {g_name}")
-            st.pyplot(fig_qq)
+        if st.sidebar.button("开始分析") or True: # 自动运行或按钮触发
+            st.divider()
+            groups = df[group_col].dropna().unique()
+            n_groups = len(groups)
             
-        with tab2:
-            # Residual Plot (Value - Mean)
-            fig_res, ax = plt.subplots(figsize=(8, 5))
-            residuals = []
-            fitted = []
-            for i, g_name in enumerate(groups):
-                mean_val = group_data[i].mean()
-                res = group_data[i] - mean_val
-                residuals.extend(res)
-                fitted.extend([mean_val]*len(res))
+            st.write(f"**分析模型**: `{target_col}` by `{group_col}`")
+            st.write(f"**分组数量**: {n_groups} 组 ({', '.join(map(str, groups))})")
+
+            if n_groups < 2:
+                st.error("错误：分组变量至少需要包含 2 个组别。")
+                st.stop()
+
+            # 数据分组提取
+            group_data = [df[df[group_col] == g][target_col].dropna() for g in groups]
+
+            # --- 1. 正态性与方差齐性 ---
+            col1, col2 = st.columns(2)
+            all_normal = True
+            with col1:
+                st.write("#### 正态性检验 (Shapiro-Wilk)")
+                for i, g in enumerate(groups):
+                    s, p = stats.shapiro(group_data[i])
+                    is_norm = p > 0.05
+                    if not is_norm: all_normal = False
+                    st.write(f"- 组 {g}: P={p:.4f} {'(正态)' if is_norm else '(非正态)'}")
             
-            sns.scatterplot(x=fitted, y=residuals, ax=ax)
-            ax.axhline(0, color='r', linestyle='--')
-            ax.set_xlabel("Fitted Values (Group Means)")
-            ax.set_ylabel("Residuals")
-            ax.set_title("Residuals vs Fitted")
-            st.pyplot(fig_res)
+            with col2:
+                st.write("#### 方差齐性检验 (Levene)")
+                s_lev, p_lev = stats.levene(*group_data)
+                is_homo = p_lev > 0.05
+                st.write(f"- 整体: P={p_lev:.4f} {'(方差齐)' if is_homo else '(方差不齐)'}")
 
-        with tab3:
-            fig_box, ax = plt.subplots()
-            sns.boxplot(x=cat_col, y=num_col, data=df, ax=ax)
-            sns.stripplot(x=cat_col, y=num_col, data=df, color='black', alpha=0.5, ax=ax)
-            st.pyplot(fig_box)
+            # --- 2. 图表诊断 ---
+            with st.expander("查看诊断图表 (QQ图/残差图)", expanded=False):
+                tabs = st.tabs(["QQ图", "箱线图"])
+                with tabs[0]:
+                    fig, ax = plt.subplots(1, n_groups, figsize=(4*n_groups, 4))
+                    if n_groups == 1: ax = [ax]
+                    for i, g in enumerate(groups):
+                        stats.probplot(group_data[i], dist="norm", plot=ax[i])
+                        ax[i].set_title(f"QQ Plot: {g}")
+                    st.pyplot(fig)
+                with tabs[1]:
+                    fig, ax = plt.subplots()
+                    sns.boxplot(x=group_col, y=target_col, data=df, ax=ax)
+                    sns.stripplot(x=group_col, y=target_col, data=df, color='black', alpha=0.3, ax=ax)
+                    st.pyplot(fig)
 
-        # --- 3. 智能推荐逻辑 ---
-        st.header("3. 统计方法推荐与结果")
-        
-        recommendation = ""
-        method_code = ""
-
-        # 逻辑树
-        if len(groups) == 2:
-            if all_normal and is_homoscedastic:
-                recommendation = "✅ 推荐方法：独立样本 T 检验 (Student's t-test)"
-                res = stats.ttest_ind(group_data[0], group_data[1])
-                method_code = f"T-statistic: {res.statistic:.3f}, P-value: {res.pvalue:.4f}"
-            elif all_normal and not is_homoscedastic:
-                recommendation = "✅ 推荐方法：Welch's T 检验 (校正方差不齐)"
-                res = stats.ttest_ind(group_data[0], group_data[1], equal_var=False)
-                method_code = f"T-statistic: {res.statistic:.3f}, P-value: {res.pvalue:.4f}"
-            else:
-                recommendation = "✅ 推荐方法：Mann-Whitney U 检验 (非参数检验)"
-                res = stats.mannwhitneyu(group_data[0], group_data[1])
-                method_code = f"U-statistic: {res.statistic:.3f}, P-value: {res.pvalue:.4f}"
-        
-        elif len(groups) > 2:
-            if all_normal and is_homoscedastic:
-                recommendation = "✅ 推荐方法：单因素方差分析 (One-Way ANOVA)"
-                res = stats.f_oneway(*group_data)
-                method_code = f"F-statistic: {res.statistic:.3f}, P-value: {res.pvalue:.4f}"
-            elif all_normal and not is_homoscedastic:
-                recommendation = "✅ 推荐方法：Welch's ANOVA (校正方差不齐)"
-                # Scipy doesn't have Welch ANOVA easily, suggest pingouin or use statsmodels logic generally
-                method_code = "建议使用 Welch ANOVA (本简易版暂仅展示普通ANOVA结果供参考，请注意P值可能不准)"
-                res = stats.f_oneway(*group_data) # Fallback for demo
-            else:
-                recommendation = "✅ 推荐方法：Kruskal-Wallis H 检验 (非参数检验)"
-                res = stats.kruskal(*group_data)
-                method_code = f"H-statistic: {res.statistic:.3f}, P-value: {res.pvalue:.4f}"
-
-        st.success(recommendation)
-        st.code(method_code, language="text")
-        
-        if "P-value" in method_code:
-            p_val = float(method_code.split("P-value: ")[1].split(")")[0] if ")" in method_code else method_code.split("P-value: ")[1])
-            if p_val < 0.05:
-                st.write("**结论：** 组间存在显著差异 (P < 0.05)，建议进行事后检验 (Post-hoc)。")
-            else:
-                st.write("**结论：** 组间无显著差异。")
-
-    elif analysis_type == "双因素分析 (Two-Way)":
-        factors = [c for c in cols if c != num_col]
-        if len(factors) < 2:
-            st.error("数据中至少需要两列作为分类变量才能进行双因素分析！")
-            st.stop()
+            # --- 3. 统计方法推荐与执行 ---
+            st.subheader("分析结果")
             
-        f1 = st.sidebar.selectbox("选择因素 1", factors)
-        f2 = st.sidebar.selectbox("选择因素 2", [c for c in factors if c != f1])
-        
-        st.write(f"正在分析：**{num_col}** ~ **{f1}** + **{f2}** + **{f1}:{f2}**")
-        
-        # 使用 Statsmodels 进行双因素 ANOVA
-        # 需要构建公式字符串，处理列名中的特殊字符
-        clean_col = "Value"
-        clean_f1 = "Factor1"
-        clean_f2 = "Factor2"
-        
-        temp_df = pd.DataFrame({
-            clean_col: df[num_col],
-            clean_f1: df[f1].astype(str),
-            clean_f2: df[f2].astype(str)
-        })
-        
-        model = ols(f'{clean_col} ~ C({clean_f1}) + C({clean_f2}) + C({clean_f1}):C({clean_f2})', data=temp_df).fit()
-        
-        # 检验正态性（基于残差）
-        residuals = model.resid
-        stat_shapiro, p_shapiro = stats.shapiro(residuals)
-        
-        st.header("2. 假设检验 (基于模型残差)")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"**残差正态性 (Shapiro)**: P={p_shapiro:.4f}")
-            if p_shapiro < 0.05:
-                st.warning("警告：残差不符合正态分布，ANOVA结果可能不可靠。")
-            else:
-                st.success("残差符合正态分布。")
+            method_name = ""
+            p_value = 1.0
+            result_text = ""
+            
+            # 决策树逻辑
+            if n_groups == 2:
+                if all_normal and is_homo:
+                    method_name = "独立样本 T 检验 (Student's t-test)"
+                    res = stats.ttest_ind(group_data[0], group_data[1])
+                    p_value = res.pvalue
+                elif all_normal and not is_homo:
+                    method_name = "Welch's T 检验 (不需方差齐)"
+                    res = stats.ttest_ind(group_data[0], group_data[1], equal_var=False)
+                    p_value = res.pvalue
+                else:
+                    method_name = "Mann-Whitney U 检验 (非参数)"
+                    res = stats.mannwhitneyu(group_data[0], group_data[1])
+                    p_value = res.pvalue
+            else: # > 2 groups
+                if all_normal and is_homo:
+                    method_name = "单因素方差分析 (One-Way ANOVA)"
+                    res = stats.f_oneway(*group_data)
+                    p_value = res.pvalue
+                elif all_normal and not is_homo:
+                    # 简易处理：推荐Welch ANOVA，此处暂用Kruskal或提示
+                    method_name = "Kruskal-Wallis 检验 (因方差不齐，推荐非参数)"
+                    res = stats.kruskal(*group_data)
+                    p_value = res.pvalue
+                else:
+                    method_name = "Kruskal-Wallis H 检验 (非参数)"
+                    res = stats.kruskal(*group_data)
+                    p_value = res.pvalue
+
+            st.info(f"💡 推荐并使用的统计方法：**{method_name}**")
+            st.metric("P 值 (P-value)", f"{p_value:.4e}" if p_value < 0.001 else f"{p_value:.4f}")
+
+            # --- 4. Post-hoc 分析 (仅当显著时) ---
+            if p_value < 0.05:
+                st.write("---")
+                st.write("#### 事后多重比较 (Post-hoc Analysis)")
+                st.caption("检测到组间存在显著差异，正在进行两两比较...")
+
+                if "ANOVA" in method_name:
+                    # Tukey HSD
+                    tukey = pairwise_tukeyhsd(endog=df[target_col], groups=df[group_col], alpha=0.05)
+                    st.text(tukey.summary())
+                    # 转换结论为人话
+                    sig_pairs = tukey.summary().data[1:]
+                    sig_found = [row for row in sig_pairs if row[6] == True] # reject column
+                    if sig_found:
+                        st.write("**显著差异组对:**")
+                        for row in sig_found:
+                            st.write(f"- **{row[0]}** vs **{row[1]}** (P={row[3]:.4f})")
                 
-        with col2:
-            st.write("**残差分布图**")
-            fig_res, ax = plt.subplots(figsize=(6, 4))
-            sm.qqplot(residuals, line='s', ax=ax)
-            st.pyplot(fig_res)
-            
-        st.header("3. 分析结果 (Two-Way ANOVA)")
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        st.dataframe(anova_table.style.format("{:.4f}"))
+                elif "Kruskal" in method_name or "Mann-Whitney" in method_name:
+                    # 简化版 Post-hoc：Bonferroni校正的Mann-Whitney
+                    # scikit-posthocs 库更好，但为了保持单文件运行稳定，这里手写一个简单的校正
+                    st.write("**使用 Bonferroni 校正的 Mann-Whitney U 检验:**")
+                    import itertools
+                    pairs = list(itertools.combinations(groups, 2))
+                    adj_alpha = 0.05 / len(pairs)
+                    st.write(f"校正后显著性阈值 alpha = {adj_alpha:.5f}")
+                    
+                    for g1, g2 in pairs:
+                        d1 = df[df[group_col] == g1][target_col]
+                        d2 = df[df[group_col] == g2][target_col]
+                        u_stat, p_u = stats.mannwhitneyu(d1, d2)
+                        sig = "**显著**" if p_u < adj_alpha else "不显著"
+                        st.write(f"- {g1} vs {g2}: P={p_u:.4f} -> {sig}")
+
+    elif analysis_mode == "分类变量关联分析 (卡方/Fisher)":
+        var1 = st.sidebar.selectbox("行变量 (Row)", cols)
+        var2 = st.sidebar.selectbox("列变量 (Column)", [c for c in cols if c != var1])
         
-        st.info("""
-        **解读指南：**
-        1. 首先看交互项 (:) 的 P值。如果 P < 0.05，说明两个因素之间有交互作用，单独解释主效应可能不准确。
-        2. 如果交互项不显著，则分别看两个主效应 (Factor1, Factor2) 的 P值。
-        """)
+        st.divider()
+        st.write(f"**列联表分析**: `{var1}` vs `{var2}`")
+        
+        # 生成列联表
+        crosstab = pd.crosstab(df[var1], df[var2])
+        st.write("#### 观测频数表 (Observed)")
+        st.dataframe(crosstab)
+        
+        # 计算期望频数
+        chi2, p, dof, expected = stats.chi2_contingency(crosstab)
+        
+        # 判断方法
+        total_sample = crosstab.values.sum()
+        min_expected = expected.min()
+        shape = crosstab.shape
+        
+        method_name = ""
+        
+        # 逻辑判定
+        if shape == (2, 2):
+            if min_expected < 5 or total_sample < 40:
+                method_name = "Fisher 精确检验 (Fisher's Exact Test)"
+                # Fisher只支持2x2
+                oddsratio, p_val = stats.fisher_exact(crosstab)
+            else:
+                method_name = "卡方检验 (Pearson Chi-Square)"
+                p_val = p # 使用上面 chi2_contingency 的结果
+        else:
+            # R x C 表格
+            if min_expected < 5:
+                st.warning("警告：超过20%的单元格期望频数小于5，卡方检验结果可能不准。")
+            method_name = "卡方检验 (Pearson Chi-Square)"
+            p_val = p
+
+        st.info(f"💡 推荐并使用的统计方法：**{method_name}**")
+        st.metric("P 值 (P-value)", f"{p_val:.4e}" if p_val < 0.001 else f"{p_val:.4f}")
+        
+        if p_val < 0.05:
+            st.success("结论：两个变量之间存在显著关联。")
+        else:
+            st.write("结论：两个变量之间相互独立（无显著关联）。")
 
 else:
-    st.info("请在左侧上传数据开始分析。")
+    st.info("👈 请在左侧上传文件或粘贴数据以开始。")
