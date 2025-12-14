@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 import statsmodels.api as sm
+from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -12,12 +13,11 @@ from io import StringIO
 st.set_page_config(page_title="统计分析工具", layout="wide")
 st.title("统计分析工具")
 
-# --- 工具函数：解析手动输入 ---
+# --- 工具函数 ---
 def parse_manual_input(text_input, sep_char):
     try:
         data = StringIO(text_input)
         if sep_char == '制表符 (Excel复制)':
-            # read_csv 对不齐的数据处理较好，会自动填充NaN
             df = pd.read_csv(data, sep='\t')
         elif sep_char == '逗号 (CSV)':
             df = pd.read_csv(data)
@@ -36,10 +36,24 @@ df_raw = None
 
 if input_method == "手动输入/粘贴":
     st.sidebar.info("提示：直接从Excel复制数据粘贴即可")
+    
+    # --- 增加：快速示例数据按钮 ---
+    col_demo1, col_demo2 = st.sidebar.columns(2)
+    if col_demo1.button("单因素示例"):
+        st.session_state.demo_text = "GroupA\tGroupB\tGroupC\n12.5\t15.2\t18.1\n13.1\t14.8\t17.5\n11.9\t15.5\t18.6\n12.8\t14.2\t19.0\n13.0\t\t17.8"
+        st.session_state.demo_type = "wide"
+    
+    if col_demo2.button("双因素示例"):
+        # 生成标准的三列格式：性别、治疗、数值
+        st.session_state.demo_text = "Gender\tDrug\tValue\nMale\tDrugA\t10.5\nMale\tDrugA\t11.2\nMale\tDrugB\t15.4\nMale\tDrugB\t16.1\nFemale\tDrugA\t12.1\nFemale\tDrugA\t13.0\nFemale\tDrugB\t18.2\nFemale\tDrugB\t17.5"
+        st.session_state.demo_type = "long"
+
+    # 获取文本框内容
+    default_text = st.session_state.get('demo_text', "")
     sep_mode = st.sidebar.selectbox("分隔符格式", ["制表符 (Excel复制)", "逗号 (CSV)", "空格"], index=0)
-    # 默认值展示用户想要的宽格式
-    default_text = "Male\tFemale\n54\t43\n23\t34\n45\t65\n54\t77\n45\t46\n\t65"
-    text_data = st.sidebar.text_area("在此粘贴数据", height=200, value=default_text)
+    
+    text_data = st.sidebar.text_area("在此粘贴数据 (建议带表头)", height=200, value=default_text)
+    
     if text_data:
         df_raw = parse_manual_input(text_data, sep_mode)
 
@@ -53,178 +67,217 @@ elif input_method == "上传文件":
 
 # --- 主逻辑 ---
 if df_raw is not None:
-    st.write("### 1. 原始数据预览")
-    st.dataframe(df_raw.head())
+    # 修复问题2：使用 use_container_width 展示完整数据，不使用 .head()
+    st.write("### 1. 数据预览", df_raw) 
+    st.caption(f"共 {df_raw.shape[0]} 行， {df_raw.shape[1]} 列")
 
-    # --- 数据格式清洗与转换 (关键更新) ---
-    st.sidebar.header("2. 数据格式设置")
+    # --- 数据格式设置 ---
+    st.sidebar.divider()
+    st.sidebar.header("2. 数据结构")
+    
+    # 智能判断默认格式：如果列数=3且第一列像是分类，默认切到长格式
+    default_fmt_idx = 0
+    if st.session_state.get('demo_type') == 'long' or (df_raw.shape[1] == 3 and df_raw.iloc[:,0].dtype == 'O'):
+        default_fmt_idx = 1
+        
     data_shape = st.sidebar.radio(
         "选择数据排列方式", 
-        ["宽格式 (每列是一组)", "长格式 (一列分组+一列数值)"],
-        help="宽格式：如你提供的示例，Male一列，Female一列。\n长格式：一列叫Group写着Male/Female，一列叫Value写着数字。"
+        ["宽格式 (每列是一组，仅限单因素)", "长格式 (标准格式，支持单/双因素)"],
+        index=default_fmt_idx,
+        help="宽格式：如 GroupA, GroupB 每列一组数据。\n长格式：一列分组(如Gender)，一列数值(Value)。双因素必须用长格式。"
     )
 
     df_clean = None
     target_col = "Value"
-    group_col = "Group"
+    group_cols = [] # 可能有多个分组变量
 
-    if data_shape == "宽格式 (每列是一组)":
-        # 自动转换为长格式 (Melt)
+    # --- A. 宽格式处理 (自动 Melt) ---
+    if "宽格式" in data_shape:
         try:
-            # 1. 获取所有数值列
             cols = df_raw.columns.tolist()
-            # 2. 转换逻辑：遍历每一列，去除空值，合并
             melted_data = []
             for c in cols:
-                # 只取数值类型的数据，且去除空值 (NaN)
-                # 强制转为numeric，非数字变NaN
                 clean_series = pd.to_numeric(df_raw[c], errors='coerce').dropna()
                 for val in clean_series:
-                    melted_data.append({group_col: c, target_col: val})
-            
+                    melted_data.append({"Group": c, "Value": val})
             df_clean = pd.DataFrame(melted_data)
-            st.info(f"已自动将宽格式转换为分析格式：共 {len(cols)} 个组 ({', '.join(cols)})")
-            
+            group_cols = ["Group"]
+            target_col = "Value"
         except Exception as e:
-            st.error(f"格式转换失败，请检查数据是否包含非数字字符: {e}")
+            st.error(f"宽格式转换失败: {e}")
+            st.stop()
+
+    # --- B. 长格式处理 (用户指定列) ---
+    else:
+        df_clean = df_raw.copy()
+        all_cols = df_clean.columns.tolist()
+        num_cols = df_clean.select_dtypes(include=[np.number]).columns.tolist()
+        
+        # 自动推断
+        default_num_idx = 0
+        if len(num_cols) > 0:
+             # 尝试找名字里带 value, score 的列
+            for i, c in enumerate(num_cols):
+                if 'val' in c.lower() or 'score' in c.lower():
+                    default_num_idx = i
+                    break
+        
+        st.sidebar.subheader("指定列名")
+        target_col = st.sidebar.selectbox("数值变量 (Y)", num_cols, index=default_num_idx)
+        
+        # 剩余的列作为候选分组
+        cat_candidates = [c for c in all_cols if c != target_col]
+        selected_factors = st.sidebar.multiselect("选择分组变量 (X)", cat_candidates, default=cat_candidates[:2])
+        
+        if len(selected_factors) == 0:
+            st.warning("请至少选择一个分组变量")
+            st.stop()
+        
+        group_cols = selected_factors
+
+    # --- 3. 分析模式选择 ---
+    if df_clean is not None:
+        st.sidebar.divider()
+        st.sidebar.header("3. 分析与检验")
+        
+        # 自动判断模式
+        analysis_mode = "单因素分析"
+        if len(group_cols) == 2:
+            analysis_mode = "双因素分析 (Two-Way)"
+        elif len(group_cols) > 2:
+            st.warning("暂不支持3个以上因素的交互分析，将仅进行描述统计。")
             st.stop()
             
-    else: # 长格式
-        df_clean = df_raw.copy()
-        cols = df_clean.columns.tolist()
-        # 让用户选列
-        st.sidebar.subheader("指定列名")
-        num_cols = df_clean.select_dtypes(include=[np.number]).columns.tolist()
-        target_col = st.sidebar.selectbox("数值变量 (Y)", num_cols)
-        group_col = st.sidebar.selectbox("分组变量 (X)", [c for c in cols if c != target_col])
+        st.subheader(f"分析模式: {analysis_mode}")
 
-    # --- 确保数据准备完毕 ---
-    if df_clean is not None:
-        # st.write("### 2. 清洗后数据 (用于分析)", df_clean.head()) 
-        
-        # 这里的逻辑和之前一样，但基于 df_clean 运行
-        # 自动推断分析模式：只要转换成功，大概率是数值比较
-        # 但保留卡方选项以防万一
-        
-        analysis_mode = st.sidebar.selectbox(
-            "分析目标", 
-            ["数值变量差异比较 (T检验/ANOVA/非参数)", "分类变量关联分析 (卡方/Fisher)"]
-        )
-
-        if analysis_mode == "数值变量差异比较 (T检验/ANOVA/非参数)":
-            groups = df_clean[group_col].unique()
-            n_groups = len(groups)
+        # === 单因素分析流程 ===
+        if analysis_mode == "单因素分析":
+            g_col = group_cols[0]
+            groups = df_clean[g_col].unique()
+            group_data = [df_clean[df_clean[g_col] == g][target_col].values for g in groups]
             
-            if n_groups < 2:
-                st.error("错误：有效分组少于2组，无法进行比较。")
-                st.stop()
-
-            group_data = [df_clean[df_clean[group_col] == g][target_col].values for g in groups]
-
-            # --- 统计分析核心 ---
-            st.divider()
-            st.subheader("3. 统计分析报告")
-
             # 1. 假设检验
             col1, col2 = st.columns(2)
             all_normal = True
             with col1:
-                st.write("**正态性检验 (Shapiro-Wilk)**")
+                st.write("**正态性 (Shapiro)**")
                 for i, g in enumerate(groups):
-                    if len(group_data[i]) >= 3: # Shapiro要求至少3个样本
+                    if len(group_data[i]) >= 3:
                         s, p = stats.shapiro(group_data[i])
                         is_norm = p > 0.05
                         if not is_norm: all_normal = False
-                        st.write(f"- {g}: P={p:.4f} { '✅' if is_norm else '❌'}")
-                    else:
-                        st.write(f"- {g}: 样本过少，跳过")
+                        st.write(f"- {g}: P={p:.4f} {'✅' if is_norm else '❌'}")
             
             with col2:
-                st.write("**方差齐性检验 (Levene)**")
-                # 移除空数组防止报错
+                st.write("**方差齐性 (Levene)**")
                 valid_data = [d for d in group_data if len(d) > 0]
                 if len(valid_data) > 1:
                     s_lev, p_lev = stats.levene(*valid_data)
                     is_homo = p_lev > 0.05
-                    st.write(f"- 整体: P={p_lev:.4f} { '✅' if is_homo else '❌'}")
-                else:
-                    is_homo = False # 无法检验
+                    st.write(f"- 整体: P={p_lev:.4f} {'✅' if is_homo else '❌'}")
+                else: is_homo = False
 
-            # 2. 方法推荐与执行
-            st.write("---")
+            # 2. 推荐逻辑
             method_name = ""
             p_value = 1.0
             
-            # 逻辑树
-            if n_groups == 2:
+            if len(groups) == 2:
                 if all_normal and is_homo:
-                    method_name = "独立样本 T 检验 (Student's t-test)"
+                    method_name = "独立样本 T 检验"
                     res = stats.ttest_ind(group_data[0], group_data[1])
                     p_value = res.pvalue
                 elif all_normal and not is_homo:
-                    method_name = "Welch's T 检验 (校正方差不齐)"
+                    method_name = "Welch's T 检验"
                     res = stats.ttest_ind(group_data[0], group_data[1], equal_var=False)
                     p_value = res.pvalue
                 else:
-                    method_name = "Mann-Whitney U 检验 (非参数)"
+                    method_name = "Mann-Whitney U 检验"
                     res = stats.mannwhitneyu(group_data[0], group_data[1])
                     p_value = res.pvalue
-            else: # > 2 groups
+            else:
                 if all_normal and is_homo:
                     method_name = "单因素方差分析 (One-Way ANOVA)"
                     res = stats.f_oneway(*group_data)
                     p_value = res.pvalue
                 else:
-                    method_name = "Kruskal-Wallis 检验 (非参数)"
+                    method_name = "Kruskal-Wallis 检验"
                     res = stats.kruskal(*group_data)
                     p_value = res.pvalue
+            
+            st.info(f"💡 推荐方法：**{method_name}**")
+            st.write(f"**P-value**: {p_value:.4f}")
 
-            st.info(f"💡 智能推荐方法：**{method_name}**")
-            st.metric("P 值 (P-value)", f"{p_value:.4e}" if p_value < 0.001 else f"{p_value:.4f}")
-
-            # 3. 可视化
-            with st.expander("查看可视化图表 (箱线图/QQ图)", expanded=True):
-                tab1, tab2 = st.tabs(["箱线图", "QQ图"])
-                with tab1:
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    sns.boxplot(x=group_col, y=target_col, data=df_clean, ax=ax, palette="Set2")
-                    sns.stripplot(x=group_col, y=target_col, data=df_clean, color='black', alpha=0.5, ax=ax)
-                    st.pyplot(fig)
-                with tab2:
-                    fig, ax = plt.subplots(1, n_groups, figsize=(4*n_groups, 4))
-                    if n_groups == 1: ax = [ax]
-                    for i, g in enumerate(groups):
-                        stats.probplot(group_data[i], dist="norm", plot=ax[i])
-                        ax[i].set_title(f"QQ: {g}")
-                    st.pyplot(fig)
-
-            # 4. Post-hoc
+            # 3. Post-hoc
             if p_value < 0.05:
                 st.write("---")
-                st.subheader("事后多重比较 (Post-hoc)")
+                st.write("**事后多重比较**")
                 if "ANOVA" in method_name:
-                    tukey = pairwise_tukeyhsd(endog=df_clean[target_col], groups=df_clean[group_col], alpha=0.05)
+                    tukey = pairwise_tukeyhsd(df_clean[target_col], df_clean[g_col])
                     st.text(tukey.summary())
                 else:
-                    st.caption("基于 Bonferroni 校正的 Mann-Whitney U 检验")
+                    st.write("非参数两两比较 (Bonferroni校正):")
                     import itertools
                     pairs = list(itertools.combinations(groups, 2))
-                    adj_alpha = 0.05 / len(pairs)
+                    adj = 0.05 / len(pairs)
                     for g1, g2 in pairs:
-                        d1 = df_clean[df_clean[group_col] == g1][target_col]
-                        d2 = df_clean[df_clean[group_col] == g2][target_col]
+                        d1 = df_clean[df_clean[g_col]==g1][target_col]
+                        d2 = df_clean[df_clean[g_col]==g2][target_col]
                         u, p_u = stats.mannwhitneyu(d1, d2)
-                        sig = "🔴 显著" if p_u < adj_alpha else "⚪ 不显著"
-                        st.write(f"**{g1} vs {g2}**: P={p_u:.4f} {sig}")
+                        sig = "🔴显著" if p_u < adj else "⚪"
+                        st.write(f"{g1} vs {g2}: P={p_u:.4f} {sig}")
+            
+            # 4. 可视化
+            with st.expander("图表"):
+                fig, ax = plt.subplots()
+                sns.boxplot(x=g_col, y=target_col, data=df_clean, ax=ax)
+                st.pyplot(fig)
 
-        elif analysis_mode == "分类变量关联分析 (卡方/Fisher)":
-            st.warning("卡方检验通常需要'长格式'或'交叉表'数据。如果您输入的是宽格式数值数据，请切换回'数值变量差异比较'模式。")
-            # 这里保留原有逻辑，只要用户在上面选了长格式就能用
-            if data_shape != "长格式 (一列分组+一列数值)":
-                st.error("请在左侧数据格式设置中选择 '长格式' 以使用此功能，或上传整理好的列联表数据。")
+        # === 双因素分析流程 ===
+        elif analysis_mode == "双因素分析 (Two-Way)":
+            f1, f2 = group_cols[0], group_cols[1]
+            st.write(f"**模型**: `{target_col} ~ {f1} + {f2} + {f1}:{f2}`")
+            
+            # 必须用 statsmodels 的 ols 字符串公式
+            # 需要对列名进行清洗，防止空格报错
+            df_temp = df_clean.rename(columns={target_col: 'Y', f1: 'F1', f2: 'F2'})
+            
+            model = ols('Y ~ C(F1) + C(F2) + C(F1):C(F2)', data=df_temp).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            
+            # 1. 假设检验 (残差正态性)
+            resid = model.resid
+            s_shapiro, p_shapiro = stats.shapiro(resid)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**正态性检验 (残差)**")
+                st.write(f"P-value = {p_shapiro:.4f} {'✅' if p_shapiro > 0.05 else '❌ (建议慎重)'}")
+            with col2:
+                st.write("**方差齐性**")
+                st.write("Levene检验在双因素下较复杂，建议观察残差图。")
+
+            st.info("💡 推荐方法：**双因素方差分析 (Two-Way ANOVA)**")
+            
+            # 2. ANOVA 表
+            st.write("**ANOVA 结果表**")
+            # 翻译索引名以便于阅读
+            anova_display = anova_table.rename(index={'C(F1)': f'主效应: {f1}', 'C(F2)': f'主效应: {f2}', 'C(F1):C(F2)': '交互作用'})
+            st.dataframe(anova_display.style.format("{:.4f}"))
+
+            # 3. 结果解读
+            p_inter = anova_table.loc['C(F1):C(F2)', 'PR(>F)']
+            if p_inter < 0.05:
+                st.warning(f"🔴 检测到显著的交互作用 (P={p_inter:.4f})！这表明 {f1} 的效果依赖于 {f2}。单独解释主效应可能不准确，建议进行简单效应分析。")
             else:
-                 # 复用之前的卡方逻辑
-                 pass 
+                st.success(f"🟢 未检测到交互作用 (P={p_inter:.4f})。可以分别解释两个主效应。")
 
-else:
-    st.info("👈 请在左侧粘贴数据或上传文件。")
+            # 4. 可视化
+            with st.expander("交互作用图 (Interaction Plot)", expanded=True):
+                fig, ax = plt.subplots()
+                from statsmodels.graphics.factorplots import interaction_plot
+                # Interaction plot 需要 numpy array
+                interaction_plot(x=df_temp['F1'], trace=df_temp['F2'], response=df_temp['Y'], ax=ax)
+                ax.set_xlabel(f1)
+                ax.set_ylabel(f"Mean of {target_col}")
+                ax.legend(title=f2)
+                st.pyplot(fig)
