@@ -15,34 +15,35 @@ def set_style(bg_url):
     st.markdown(
         f"""
         <style>
-        /* 全局背景：增加 0.8s 的柔和过渡 */
         .stApp {{
             background-image: url("{bg_url}");
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
-            transition: background-image 0.8s ease-in-out;
+            transition: background-image 0.5s ease-in-out;
         }}
-        
-        /* 主容器：磨砂玻璃质感 */
         .block-container {{
-            background-color: rgba(0, 0, 0, 0.65);
+            background-color: rgba(0, 0, 0, 0.7); /* 背景加深，让卡牌更明显 */
             padding: 3rem;
             border-radius: 20px;
             color: #E0E0E0;
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255,255,255,0.1);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
         }}
+        h1, h2, h3, p {{ color: #FFF !important; }}
         
-        /* 字体美化 */
-        h1, h2, h3, p, label, span {{ font-family: 'Helvetica Neue', sans-serif; color: #FFF !important; }}
-        
-        /* --- 🎴 核心动画：卡牌呼吸光效 --- */
-        @keyframes glowing-pulse {{
-            0% {{ box-shadow: 0 0 5px #7B2CBF, 0 0 15px #7B2CBF; transform: scale(1); }}
-            50% {{ box-shadow: 0 0 25px #FF00FF, 0 0 50px #FF00FF; transform: scale(1.02); }}
-            100% {{ box-shadow: 0 0 5px #7B2CBF, 0 0 15px #7B2CBF; transform: scale(1); }}
+        /* --- ⚡️ 强力仪式感动画：震动+闪烁 --- */
+        @keyframes shake-flash {{
+            0% {{ transform: translate(1px, 1px) rotate(0deg); filter: brightness(1); }}
+            10% {{ transform: translate(-1px, -2px) rotate(-1deg); filter: brightness(1.2); }}
+            20% {{ transform: translate(-3px, 0px) rotate(1deg); filter: brightness(1.5) drop-shadow(0 0 10px gold); }}
+            30% {{ transform: translate(3px, 2px) rotate(0deg); filter: brightness(1.2); }}
+            40% {{ transform: translate(1px, -1px) rotate(1deg); filter: brightness(1); }}
+            50% {{ transform: translate(-1px, 2px) rotate(-1deg); filter: brightness(1.2); }}
+            60% {{ transform: translate(-3px, 1px) rotate(0deg); filter: brightness(1.5) drop-shadow(0 0 15px cyan); }}
+            70% {{ transform: translate(3px, 1px) rotate(-1deg); filter: brightness(1.2); }}
+            80% {{ transform: translate(-1px, -1px) rotate(1deg); filter: brightness(1); }}
+            90% {{ transform: translate(1px, 2px) rotate(0deg); filter: brightness(1.2); }}
+            100% {{ transform: translate(1px, -2px) rotate(-1deg); filter: brightness(1); }}
         }}
         
         .tarot-card-back {{
@@ -55,34 +56,24 @@ def set_style(bg_url):
             margin: 0 auto;
         }}
         
-        /* 激活状态类：添加动画 */
+        /* 激活状态：应用震动动画 */
         .tarot-active {{
-            animation: glowing-pulse 2s infinite ease-in-out;
-            border: 1px solid rgba(255,255,255,0.5);
+            animation: shake-flash 0.5s infinite; /* 0.5秒循环一次，非常快 */
+            border: 2px solid #FFF; /* 加个白边框确保能看见变化 */
         }}
         
-        /* 按钮美化 */
+        /* 按钮样式 */
         .stButton>button {{
             width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white;
             border: none;
             height: 3.5rem;
-            font-size: 1.1rem;
-            font-weight: bold;
-            letter-spacing: 1px;
+            font-size: 1.2rem;
             border-radius: 10px;
-            transition: all 0.3s;
-            color: white;
-            margin-top: 1rem;
-        }}
-        .stButton>button:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(118, 75, 162, 0.5);
         }}
         
-        /* 隐藏水印 */
-        #MainMenu {{visibility: hidden;}}
-        footer {{visibility: hidden;}}
+        #MainMenu, footer {{visibility: hidden;}}
         </style>
         """,
         unsafe_allow_html=True
@@ -162,7 +153,7 @@ def consult_oracle(api_key, zodiac, mbti, weather, huangli, card):
     
     # 这里填你想要用的模型，比如 Qwen/Qwen2.5-7B-Instruct (免费)
     # 或者 Qwen/Qwen3-8B-Instruct (如果有)
-    MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+    MODEL_NAME = "Qwen/Qwen3-8B-Instruct"
     
     system_prompt = "你是一位精通荣格心理学、星象学与塔罗奥义的神秘占卜师。你的语言风格是：唯美、治愈、富有哲理且带有一丝神秘感。"
     
@@ -254,61 +245,66 @@ if 'result' not in st.session_state:
 
     if start_btn:
         if not api_key:
-            st.error("请先在侧边栏或 Secrets 配置 API Key")
+            st.error("⚠️ 请先在侧边栏配置 API Key")
         else:
-            # === [状态 B]：仪式开始 (动画阶段) ===
+            # === 仪式开始 ===
             
-            # 1. 切换为呼吸动画牌背
+            # 1. ⚡️ 立即切换为“震动”牌背
+            # 注意：我加了一个 unique_id 防止缓存，确保浏览器重绘
             card_spot.markdown(f"""
                 <div style="display: flex; justify-content: center;">
                     <img src="{CARD_BACK_URL}" class="tarot-card-back tarot-active">
                 </div>
             """, unsafe_allow_html=True)
             
+            # 💡 关键点：给浏览器 0.1 秒去渲染 CSS 动画，否则 Python 会直接卡死 UI
+            time.sleep(0.1) 
+            
             # 2. 模拟连接过程 (进度提示)
             steps = [
-                "🌀 正在校准灵魂频率...",
-                "☁️ 感知此时此地的气象磁场...",
-                "🌠 翻阅古老的阿卡西记录...",
-                "🧠 AI 占卜师正在通灵..."
+                "⚡️ 能量注入中...",
+                "☁️ 正在读取星象...",
+                "🌀 阿卡西记录开启...",
+                "🧠 AI 先知通灵中..."
             ]
             
-            # 3. 并行获取数据 (在动画播放时)
-            with st.spinner(""):
-                msg_spot.info(steps[0])
-                time.sleep(1.2) # 仪式感延迟
-                
-                msg_spot.info(steps[1])
-                weather_data = get_real_weather()
-                time.sleep(1.0)
-                
-                msg_spot.info(steps[2])
-                huangli_data = get_huangli()
-                card_data = draw_tarot_card()
-                time.sleep(1.0)
-                
-                msg_spot.info(steps[3])
-                # 调用 AI
-                ai_text = consult_oracle(api_key, zodiac, mbti, weather_data, huangli_data, card_data)
-                
-                # 4. 根据结果决定背景图
-                if "雨" in weather_data or "死神" in card_data['name'] or "塔" in card_data['name']:
-                    # 深邃/雨夜
-                    new_bg = "https://images.unsplash.com/photo-1514477917009-389c76a86b68?q=80&w=1920"
-                elif "晴" in weather_data or "太阳" in card_data['name'] or "皇后" in card_data['name']:
-                    # 温暖/晨曦
-                    new_bg = "https://images.unsplash.com/photo-1470252649378-9c29740c9fa8?q=80&w=1920"
-                else:
-                    # 神秘/星空 (默认)
-                    new_bg = "https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?q=80&w=1920"
-                
-                # 5. 存入 Session 并刷新
-                st.session_state.bg_url = new_bg
-                st.session_state.result = ai_text
-                st.session_state.card = card_data
-                st.session_state.weather = weather_data
-                
-                st.rerun()
+            # 3. 进度条与数据并行
+            msg_spot = st.empty()
+            
+            # 每一段 sleep 都会让用户盯着震动的卡牌看
+            msg_spot.info(steps[0])
+            time.sleep(1.5) 
+            
+            msg_spot.info(steps[1])
+            weather_data = get_real_weather()
+            time.sleep(1.0)
+            
+            msg_spot.info(steps[2])
+            huangli_data = get_huangli()
+            card_data = draw_tarot_card()
+            time.sleep(1.0)
+            
+            msg_spot.info(steps[3])
+            # 调用 AI
+            ai_text = consult_oracle(api_key, zodiac, mbti, weather_data, huangli_data, card_data)
+            
+            # 4. 结果计算完毕，准备展示
+            
+            # 根据结果决定背景
+            if "雨" in weather_data or "死神" in card_data['name'] or "塔" in card_data['name']:
+                new_bg = "https://images.unsplash.com/photo-1514477917009-389c76a86b68?q=80&w=1920"
+            elif "晴" in weather_data or "太阳" in card_data['name']:
+                new_bg = "https://images.unsplash.com/photo-1470252649378-9c29740c9fa8?q=80&w=1920"
+            else:
+                new_bg = "https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?q=80&w=1920"
+            
+            # 更新 Session
+            st.session_state.bg_url = new_bg
+            st.session_state.result = ai_text
+            st.session_state.card = card_data
+            st.session_state.weather = weather_data
+            
+            st.rerun()
 
 # [状态 C]：结果展示页
 else:
@@ -345,3 +341,4 @@ else:
         del st.session_state.card
         del st.session_state.weather
         st.rerun()
+
