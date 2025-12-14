@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- 0. 页面配置 ---
-st.set_page_config(page_title="统计分析工具", layout="wide")
-st.title("统计分析工具")
+st.set_page_config(page_title="Ives统计分析工具", layout="wide")
+st.title("Ives统计分析工具")
 
 # --- 1. 定义数据模板 ---
 # 这些是展示给用户的“栗子”，用户可以直接在上面改，或者覆盖粘贴
@@ -373,3 +373,4 @@ if edited_df is not None and not edited_df.empty:
             
         except Exception as e:
             st.error(f"数据格式错误，请确保除第一列外均为数字。错误信息: {e}")
+
