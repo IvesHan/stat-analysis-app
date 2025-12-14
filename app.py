@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- 0. 页面配置 ---
-st.set_page_config(page_title="全能统计分析工具", layout="wide")
-st.title("📊 全能统计分析工具")
+st.set_page_config(page_title="Ives全能统计分析工具", layout="wide")
+st.title("📊 Ives全能统计分析工具")
 st.markdown("集成 **单因素差异分析**、**双因素方差分析 (矩阵输入)** 与 **列联表分析**。")
 
 # --- session_state 初始化 ---
@@ -349,3 +349,4 @@ elif analysis_mode == "列联表分析 (卡方/Fisher)":
 
         except Exception as e:
             st.error("数据格式错误，请确保除第一列外均为数字。")
+
