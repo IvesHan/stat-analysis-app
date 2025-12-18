@@ -1,347 +1,280 @@
 import streamlit as st
-import requests
-import random
-import datetime
-import time
-from lunar_python import Lunar
-from openai import OpenAI
+import pandas as pd
+import io
+import csv
+import re
 
-# ==========================================
-# 1. 页面配置与 CSS 魔法 (仪式感的核心)
-# ==========================================
-st.set_page_config(page_title="AI 灵性运势 | 星际指引", page_icon="🔮", layout="centered")
+# --- 页面配置 ---
+st.set_page_config(
+    page_title="表格处理工具 (Ives)", 
+    layout="wide", 
+    page_icon="📑"
+)
 
-def set_style(bg_url):
-    st.markdown(
-        f"""
-        <style>
-        /* 全局背景：增加 0.8s 的柔和过渡 */
-        .stApp {{
-            background-image: url("{bg_url}");
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-            transition: background-image 0.8s ease-in-out;
-        }}
-        
-        /* 主容器：磨砂玻璃质感 */
-        .block-container {{
-            background-color: rgba(0, 0, 0, 0.65);
-            padding: 3rem;
-            border-radius: 20px;
-            color: #E0E0E0;
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255,255,255,0.1);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
-        }}
-        
-        /* 字体美化 */
-        h1, h2, h3, p, label, span {{ font-family: 'Helvetica Neue', sans-serif; color: #FFF !important; }}
-        
-        /* --- 🎴 核心动画：卡牌呼吸光效 --- */
-        @keyframes glowing-pulse {{
-            0% {{ box-shadow: 0 0 5px #7B2CBF, 0 0 15px #7B2CBF; transform: scale(1); }}
-            50% {{ box-shadow: 0 0 25px #FF00FF, 0 0 50px #FF00FF; transform: scale(1.02); }}
-            100% {{ box-shadow: 0 0 5px #7B2CBF, 0 0 15px #7B2CBF; transform: scale(1); }}
-        }}
-        
-        .tarot-card-back {{
-            width: 220px;
-            border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            transition: all 0.5s ease;
-            cursor: pointer;
-            display: block;
-            margin: 0 auto;
-        }}
-        
-        /* 激活状态类：添加动画 */
-        .tarot-active {{
-            animation: glowing-pulse 2s infinite ease-in-out;
-            border: 1px solid rgba(255,255,255,0.5);
-        }}
-        
-        /* 按钮美化 */
-        .stButton>button {{
-            width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border: none;
-            height: 3.5rem;
-            font-size: 1.1rem;
-            font-weight: bold;
-            letter-spacing: 1px;
-            border-radius: 10px;
-            transition: all 0.3s;
-            color: white;
-            margin-top: 1rem;
-        }}
-        .stButton>button:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(118, 75, 162, 0.5);
-        }}
-        
-        /* 隐藏水印 */
-        #MainMenu {{visibility: hidden;}}
-        footer {{visibility: hidden;}}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+# --- 顶部标题 ---
+st.title("表格处理工具")
+st.caption("Designed by Ives | Professional Data Tool")
+st.divider()
 
-# ==========================================
-# 2. 数据获取层 (真实数据 + 免费API)
-# ==========================================
+# --- 侧边栏：模式选择 ---
+st.sidebar.header("功能菜单")
+app_mode = st.sidebar.radio("选择操作模式", ["单表处理 (清洗/筛选/透视)", "多表合并"])
 
-def get_real_weather():
-    """获取 IP 定位和真实天气"""
+# --- 核心工具函数 ---
+def detect_separator(file_buffer):
+    """检测文本文件分隔符"""
     try:
-        # 1. IP 定位
-        loc = requests.get('http://ip-api.com/json/?lang=zh-CN', timeout=2).json()
-        if loc['status'] != 'success': raise Exception("IP Fail")
-        
-        # 2. 天气获取
-        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={loc['lat']}&longitude={loc['lon']}&current=temperature_2m,weather_code&timezone=auto"
-        w_data = requests.get(w_url, timeout=2).json()['current']
-        
-        code = w_data['weather_code']
-        # WMO Code 简化映射
-        desc = "未知"
-        if code == 0: desc = "晴空万里"
-        elif code in [1,2,3]: desc = "云层流转"
-        elif code in [45,48]: desc = "迷雾笼罩"
-        elif code >= 51 and code <= 67: desc = "细雨绵绵"
-        elif code >= 80: desc = "雷雨交加"
-        else: desc = "风云变幻"
-        
-        return f"{loc['city']} · {desc} {w_data['temperature_2m']}°C"
+        sample = file_buffer.read(2048).decode("utf-8")
+        file_buffer.seek(0)
+        sniffer = csv.Sniffer()
+        dialect = sniffer.sniff(sample)
+        return dialect.delimiter
     except:
-        return "神秘维度 · 能量场稳定 22°C"
+        file_buffer.seek(0)
+        return ","
 
-def get_huangli():
-    """获取黄历"""
-    lunar = Lunar.fromDate(datetime.datetime.now())
-    return {
-        "date": f"{lunar.getMonthInChinese()}月{lunar.getDayInChinese()}",
-        "yi": " ".join(lunar.getDayYi()[:4]),
-        "ji": " ".join(lunar.getDayJi()[:4])
-    }
-
-def draw_tarot_card():
-    """塔罗牌库"""
-    deck = [
-        {"name": "愚人", "en": "The Fool", "key": "无限潜力，新的旅程"},
-        {"name": "女祭司", "en": "The High Priestess", "key": "直觉，潜意识的智慧"},
-        {"name": "皇后", "en": "The Empress", "key": "丰盛，自然的滋养"},
-        {"name": "皇帝", "en": "The Emperor", "key": "秩序，稳固的基础"},
-        {"name": "教皇", "en": "The Hierophant", "key": "传统，精神指引"},
-        {"name": "恋人", "en": "The Lovers", "key": "和谐，重要的选择"},
-        {"name": "战车", "en": "The Chariot", "key": "意志力，克服障碍"},
-        {"name": "隐士", "en": "The Hermit", "key": "内省，寻找真理"},
-        {"name": "命运之轮", "en": "Wheel of Fortune", "key": "改变，命运的转折"},
-        {"name": "正义", "en": "Justice", "key": "因果，真相显现"},
-        {"name": "倒吊人", "en": "The Hanged Man", "key": "牺牲，换个角度"},
-        {"name": "死神", "en": "Death", "key": "结束，彻底的转化"},
-        {"name": "节制", "en": "Temperance", "key": "平衡，疗愈"},
-        {"name": "魔鬼", "en": "The Devil", "key": "束缚，物质诱惑"},
-        {"name": "塔", "en": "The Tower", "key": "剧变，觉醒"},
-        {"name": "星星", "en": "The Star", "key": "希望，灵感"},
-        {"name": "月亮", "en": "The Moon", "key": "幻觉，不安"},
-        {"name": "太阳", "en": "The Sun", "key": "成功，喜悦"},
-        {"name": "审判", "en": "Judgement", "key": "重生，召唤"},
-        {"name": "世界", "en": "The World", "key": "圆满，达成"},
-    ]
-    return random.choice(deck)
-
-# ==========================================
-# 3. AI 大脑 (SiliconFlow)
-# ==========================================
-
-def consult_oracle(api_key, zodiac, mbti, weather, huangli, card):
-    """调用 LLM 生成文案"""
-    client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
-    
-    # 这里填你想要用的模型，比如 Qwen/Qwen2.5-7B-Instruct (免费)
-    # 或者 Qwen/Qwen3-8B-Instruct (如果有)
-    MODEL_NAME = "Qwen3-8B-Instruct"
-    
-    system_prompt = "你是一位精通荣格心理学、星象学与塔罗奥义的神秘占卜师。你的语言风格是：唯美、治愈、富有哲理且带有一丝神秘感。"
-    
-    user_prompt = f"""
-    请根据以下时空能量进行解读：
-    
-    【求问者】
-    - 星座：{zodiac}
-    - MBTI：{mbti}
-    - 此时此地：{weather}
-    - 历法能量：{huangli['date']} (宜：{huangli['yi']})
-    - 命运卡牌：{card['name']} ({card['en']}) - 核心：{card['key']}
-    
-    【解读要求】
-    请用 Markdown 格式输出，包含以下三个章节（不需要标题太长）：
-    1. 🌌 **能量共振**：结合天气与黄历，描述当下的整体氛围。
-    2. 🎴 **星际指引**：结合塔罗牌与星座，深入剖析今日运势。
-    3. 💡 **灵魂建议**：给 {mbti} 人格的 2 条具体行动指南。
-    
-    最后附上一句简短的箴言。
+def load_data(uploaded_file, skip_rows=0, header_row=0, sep=None, sheet_name=0):
     """
-
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=800
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠️ 宇宙信号被干扰：{str(e)} (请检查 API Key)"
-
-# ==========================================
-# 4. 界面逻辑 (控制流)
-# ==========================================
-
-# 初始化 Session State
-if 'bg_url' not in st.session_state:
-    st.session_state.bg_url = "https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?q=80&w=1920"
-
-# 应用样式
-set_style(st.session_state.bg_url)
-
-# --- 侧边栏 ---
-with st.sidebar:
-    st.title("🧙‍♂️ 档案设定")
+    通用加载函数
+    新增参数: sheet_name (可以是索引数字，也可以是名称字符串)
+    """
+    file_ext = uploaded_file.name.split('.')[-1].lower()
     
-    # 优先从 Secrets 读取 Key，如果没有则显示输入框
-    try:
-        api_key = st.secrets["SILICON_KEY"]
-        st.success("✅ 密钥已安全加载")
-    except FileNotFoundError:
-        st.warning("本地模式：请配置 secrets.toml")
-        api_key = st.text_input("SiliconFlow Key", type="password")
-        
+    if file_ext in ['xls', 'xlsx']:
+        # Excel 读取指定 Sheet
+        return pd.read_excel(uploaded_file, skiprows=skip_rows, header=header_row, sheet_name=sheet_name)
+    else:
+        # 文本文件忽略 sheet_name
+        if sep is None:
+            sep = detect_separator(uploaded_file)
+        return pd.read_csv(uploaded_file, sep=sep, skiprows=skip_rows, header=header_row, engine='python')
+
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output
+
+# ========================================================
+# 模式 1: 单表处理 (新增 Sheet 选择功能)
+# ========================================================
+if app_mode == "单表处理 (清洗/筛选/透视)":
+    
+    st.sidebar.subheader("1. 文件导入")
+    uploaded_file = st.sidebar.file_uploader("上传数据文件", type=['csv', 'xlsx', 'xls', 'tsv', 'txt'])
+    
+    if uploaded_file:
+        # 获取文件扩展名
+        file_ext = uploaded_file.name.split('.')[-1].lower()
+
+        # --- 动态参数配置区 ---
+        with st.sidebar.expander("读取参数配置", expanded=True):
+            
+            # [新增功能] 如果是 Excel，先解析 Sheet 列表供用户选择
+            selected_sheet = 0 # 默认读取第一个
+            if file_ext in ['xlsx', 'xls']:
+                try:
+                    # 使用 ExcelFile 读取元数据，不加载内容，速度快
+                    xl = pd.ExcelFile(uploaded_file)
+                    sheet_names = xl.sheet_names
+                    st.markdown("#### Excel 工作表")
+                    selected_sheet = st.selectbox("选择要读取的 Sheet", sheet_names)
+                    # 重置指针，防止后续读取报错
+                    uploaded_file.seek(0)
+                except Exception as e:
+                    st.error(f"Excel 解析失败: {e}")
+
+            # 通用参数
+            st.markdown("#### 行设置")
+            skip_rows = st.number_input("跳过前 N 行 (Skip Rows)", 0, 100, 0)
+            header_row = st.number_input("标题所在行 (Header)", 0, 100, 0)
+            
+            # CSV 专用参数
+            sep = None
+            if file_ext not in ['xlsx', 'xls']:
+                st.markdown("#### 分隔符")
+                sep_option = st.selectbox("列分隔符", ("自动识别", ",", "\t", ";", "|", "自定义"))
+                if sep_option == "自定义":
+                    sep = st.text_input("输入分隔符", ",")
+                elif sep_option != "自动识别":
+                    sep_map = {",": ",", "\t": "\t", ";": ";", "|": "|"}
+                    sep = sep_map.get(sep_option, ",")
+
+        try:
+            # 加载数据 (传入 sheet_name)
+            df_raw = load_data(uploaded_file, skip_rows, header_row, sep, sheet_name=selected_sheet)
+            st.sidebar.success(f"读取成功: {len(df_raw)} 行")
+
+            # --- 下方逻辑保持不变 ---
+            tab_clean, tab_pivot = st.tabs(["🧹 数据清洗与导出", "📈 数据透视表"])
+
+            # [Tab 1: 清洗]
+            with tab_clean:
+                # 1. 列选择
+                st.subheader("1. 列选择与排序")
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    all_cols = df_raw.columns.tolist()
+                    selected_cols = st.multiselect("保留列", all_cols, default=all_cols)
+                    if not selected_cols: selected_cols = all_cols
+                with c2:
+                    sort_col = st.selectbox("排序依据", ["无"] + selected_cols)
+                    sort_asc = st.radio("排序", ["升序", "降序"], horizontal=True, label_visibility="collapsed")
+
+                df_step1 = df_raw[selected_cols].copy()
+                if sort_col != "无":
+                    ascending = True if sort_asc == "升序" else False
+                    df_step1 = df_step1.sort_values(by=sort_col, ascending=ascending)
+
+                # 2. 内容筛选
+                st.subheader("2. 内容筛选 (Filter)")
+                df_result = df_step1.copy()
+
+                with st.container(border=True):
+                    f_col1, f_col2 = st.columns([1, 2])
+                    with f_col1:
+                        filter_target = st.selectbox("选择筛选列", ["无"] + selected_cols)
+                    
+                    if filter_target != "无":
+                        with f_col2:
+                            if pd.api.types.is_numeric_dtype(df_step1[filter_target]):
+                                min_v = float(df_step1[filter_target].min())
+                                max_v = float(df_step1[filter_target].max())
+                                rng = st.slider(f"数值范围 ({filter_target})", min_v, max_v, (min_v, max_v))
+                                df_result = df_step1[(df_step1[filter_target] >= rng[0]) & (df_step1[filter_target] <= rng[1])]
+                            else:
+                                text_input = st.text_area("输入筛选值 (支持多行/逗号分隔)", height=80)
+                                match_mode = st.radio("模式", ["精确匹配 (Is In)", "模糊包含 (Contains)"], horizontal=True)
+
+                                if text_input.strip():
+                                    keywords = [k for k in re.split(r'[,\s;，；|\n]+', text_input.strip()) if k]
+                                    if keywords:
+                                        if match_mode == "精确匹配 (Is In)":
+                                            df_result = df_step1[df_step1[filter_target].astype(str).isin(keywords)]
+                                        else:
+                                            pattern = "|".join([re.escape(k) for k in keywords])
+                                            df_result = df_step1[df_step1[filter_target].astype(str).str.contains(pattern, case=False, na=False)]
+                
+                # 3. 行截取 (手动输入)
+                st.subheader("3. 行截取 (精确范围)")
+                current_total = len(df_result)
+                if current_total > 0:
+                    r_col1, r_col2 = st.columns(2)
+                    with r_col1:
+                        start_idx = st.number_input("起始行 (Start)", 0, current_total-1, 0)
+                    with r_col2:
+                        end_idx = st.number_input("结束行 (End)", start_idx+1, current_total, current_total)
+                    df_result = df_result.iloc[start_idx:end_idx]
+
+                # 4. 导出
+                st.divider()
+                st.subheader(f"4. 结果预览与导出 (共 {len(df_result)} 行)")
+                m1, m2 = st.columns(2)
+                m1.metric("原始行数", len(df_raw))
+                m2.metric("当前行数", len(df_result), delta=len(df_result)-len(df_raw))
+                
+                st.dataframe(df_result, use_container_width=True)
+                
+                d_col1, d_col2 = st.columns(2)
+                file_name_base = uploaded_file.name.split('.')[0]
+                d_col1.download_button("📥 下载 Excel", to_excel(df_result), f"{file_name_base}_cleaned_ives.xlsx")
+                d_col2.download_button("📥 下载 CSV", df_result.to_csv(index=False).encode('utf-8-sig'), f"{file_name_base}_cleaned_ives.csv", "text/csv")
+
+            # [Tab 2: 透视表]
+            with tab_pivot:
+                st.subheader("数据透视分析")
+                if not df_raw.empty:
+                    p_c1, p_c2, p_c3, p_c4 = st.columns(4)
+                    idx = p_c1.multiselect("行维度", df_raw.columns)
+                    cols = p_c2.multiselect("列维度", df_raw.columns)
+                    vals = p_c3.multiselect("数值", df_raw.columns)
+                    func = p_c4.selectbox("聚合方式", ["sum", "mean", "count", "max", "min", "nunique"])
+                    if idx and vals:
+                        try:
+                            df_p = pd.pivot_table(df_raw, index=idx, columns=cols if cols else None, values=vals, aggfunc=func)
+                            st.dataframe(df_p, use_container_width=True)
+                            st.download_button("导出透视表", to_excel(df_p), f"{file_name_base}_pivot_ives.xlsx")
+                        except Exception as e:
+                            st.error(f"透视错误: {e}")
+
+        except Exception as e:
+            st.error(f"处理出错: {e}")
+
+# ========================================================
+# 模式 2: 多表合并
+# ========================================================
+elif app_mode == "多表合并":
+    st.subheader("📚 多文件合并工具")
+    merge_type = st.radio("合并方式", ["纵向拼接 (Concat)", "横向关联 (Merge/Join)"], captions=["行增多 (结构相同)", "列增多 (按Key关联)"])
     st.divider()
-    zodiac = st.selectbox("星座", ["白羊座","金牛座","双子座","巨蟹座","狮子座","处女座","天秤座","天蝎座","射手座","摩羯座","水瓶座","双鱼座"])
-    mbti = st.selectbox("MBTI", ["INTJ","INTP","ENTJ","ENTP","INFJ","INFP","ENFJ","ENFP","ISTJ","ISFJ","ESTJ","ESFJ","ISTP","ISFP","ESTP","ESFP"])
-    st.caption("Designed with AI & Streamlit")
-
-# --- 主界面 ---
-st.markdown("<h1 style='text-align: center; letter-spacing: 4px;'>🌌 AI Soul · 命运回响</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; opacity: 0.8; margin-bottom: 30px;'>连接宇宙意识，聆听内心声音</p>", unsafe_allow_html=True)
-
-# 占位符：用于控制卡牌显示
-card_spot = st.empty()
-# 占位符：用于显示进度文字
-msg_spot = st.empty()
-
-# 牌背图片链接
-CARD_BACK_URL = "https://images.unsplash.com/photo-1620052581237-5d36667be337?q=80&w=400&auto=format&fit=crop"
-
-# [状态 A]：还没结果，显示静态牌背 + 按钮
-if 'result' not in st.session_state:
-    # 1. 显示静态牌背
-    card_spot.markdown(f"""
-        <div style="display: flex; justify-content: center;">
-            <img src="{CARD_BACK_URL}" class="tarot-card-back">
-        </div>
-    """, unsafe_allow_html=True)
+    files = st.file_uploader("批量上传文件", accept_multiple_files=True)
     
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        start_btn = st.button("🔮 轻触牌面，开启仪式")
-
-    if start_btn:
-        if not api_key:
-            st.error("请先在侧边栏或 Secrets 配置 API Key")
+    if files:
+        if len(files) < 2:
+            st.warning("请至少上传两个文件。")
         else:
-            # === [状态 B]：仪式开始 (动画阶段) ===
-            
-            # 1. 切换为呼吸动画牌背
-            card_spot.markdown(f"""
-                <div style="display: flex; justify-content: center;">
-                    <img src="{CARD_BACK_URL}" class="tarot-card-back tarot-active">
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # 2. 模拟连接过程 (进度提示)
-            steps = [
-                "🌀 正在校准灵魂频率...",
-                "☁️ 感知此时此地的气象磁场...",
-                "🌠 翻阅古老的阿卡西记录...",
-                "🧠 AI 占卜师正在通灵..."
-            ]
-            
-            # 3. 并行获取数据 (在动画播放时)
-            with st.spinner(""):
-                msg_spot.info(steps[0])
-                time.sleep(1.2) # 仪式感延迟
-                
-                msg_spot.info(steps[1])
-                weather_data = get_real_weather()
-                time.sleep(1.0)
-                
-                msg_spot.info(steps[2])
-                huangli_data = get_huangli()
-                card_data = draw_tarot_card()
-                time.sleep(1.0)
-                
-                msg_spot.info(steps[3])
-                # 调用 AI
-                ai_text = consult_oracle(api_key, zodiac, mbti, weather_data, huangli_data, card_data)
-                
-                # 4. 根据结果决定背景图
-                if "雨" in weather_data or "死神" in card_data['name'] or "塔" in card_data['name']:
-                    # 深邃/雨夜
-                    new_bg = "https://images.unsplash.com/photo-1514477917009-389c76a86b68?q=80&w=1920"
-                elif "晴" in weather_data or "太阳" in card_data['name'] or "皇后" in card_data['name']:
-                    # 温暖/晨曦
-                    new_bg = "https://images.unsplash.com/photo-1470252649378-9c29740c9fa8?q=80&w=1920"
-                else:
-                    # 神秘/星空 (默认)
-                    new_bg = "https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?q=80&w=1920"
-                
-                # 5. 存入 Session 并刷新
-                st.session_state.bg_url = new_bg
-                st.session_state.result = ai_text
-                st.session_state.card = card_data
-                st.session_state.weather = weather_data
-                
-                st.rerun()
+            # 纵向拼接
+            if merge_type == "纵向拼接 (Concat)":
+                if st.button("开始纵向合并"):
+                    dfs = []
+                    bar = st.progress(0)
+                    for i, f in enumerate(files):
+                        try:
+                            # 默认读取第一个 Sheet
+                            d = load_data(f, sheet_name=0)
+                            d['Source_File'] = f.name 
+                            dfs.append(d)
+                        except: st.error(f"读取失败: {f.name}")
+                        bar.progress((i+1)/len(files))
+                    
+                    if dfs:
+                        merged = pd.concat(dfs, ignore_index=True)
+                        st.success(f"合并完成: {len(merged)} 行")
+                        st.dataframe(merged.head(100), use_container_width=True)
+                        st.download_button("下载结果", to_excel(merged), "concat_result_ives.xlsx")
 
-# [状态 C]：结果展示页
-else:
-    # 清空之前的卡牌占位（不需要显示牌背了，因为要显示结果）
-    card_spot.empty()
-    
-    st.markdown("---")
-    
-    # 顶部信息栏
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.info(f"📍 {st.session_state.weather}")
-    with c2:
-        huangli = get_huangli()
-        st.success(f"📅 {huangli['date']} · 宜 {huangli['yi']}")
+            # 横向关联
+            else: 
+                st.subheader("🔗 关联配置")
+                file_cols_map = {}
+                dfs_map = {}
+                cols_config = st.columns(len(files))
+                selected_keys = []
+                
+                try:
+                    for i, f in enumerate(files):
+                        f.seek(0)
+                        # 默认读取第一个 Sheet
+                        df_temp = load_data(f, sheet_name=0) 
+                        dfs_map[f.name] = df_temp
+                        with cols_config[i]:
+                            st.markdown(f"**{f.name}**")
+                            default_idx = 0
+                            for idx, c in enumerate(df_temp.columns):
+                                if c.lower() in ['id', 'no', 'code', 'key', '工号']: default_idx = idx
+                                break
+                            key_col = st.selectbox(f"关联键", df_temp.columns, index=default_idx, key=f"key_{i}")
+                            selected_keys.append(key_col)
 
-    # 核心展示区
-    st.markdown(f"""
-    <div style="text-align: center; margin: 20px 0;">
-        <h2 style="color: #FFD700; text-shadow: 0 0 10px #FFD700;">🎴 {st.session_state.card['name']}</h2>
-        <p style="font-style: italic; opacity: 0.8;">{st.session_state.card['en']} · {st.session_state.card['key']}</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # AI 文本渲染
-    st.markdown(st.session_state.result)
-    
-    st.markdown("---")
-    
-    # 重置按钮
-    if st.button("🔄 重新建立连接 (Restart)"):
-        # 清除状态
-        del st.session_state.result
-        del st.session_state.card
-        del st.session_state.weather
-        st.rerun()
+                    join_how = st.selectbox("连接方式", ["inner", "left", "outer"], index=1).split()[0]
+
+                    if st.button("开始横向关联"):
+                        base_df = dfs_map[files[0].name]
+                        base_key = selected_keys[0]
+                        base_df[base_key] = base_df[base_key].astype(str)
+                        current_df = base_df
+                        
+                        for i in range(1, len(files)):
+                            next_name = files[i].name
+                            next_df = dfs_map[next_name]
+                            next_key = selected_keys[i]
+                            next_df[next_key] = next_df[next_key].astype(str)
+                            
+                            current_df = pd.merge(current_df, next_df, left_on=base_key if i==1 else None, right_on=next_key, how=join_how, suffixes=('', f'_{i}'))
+
+                        st.success("关联成功")
+                        st.dataframe(current_df.head(50), use_container_width=True)
+                        st.download_button("下载关联结果", to_excel(current_df), "merged_join_result_ives.xlsx")
+
+                except Exception as e:
+                    st.error(f"错误: {e}")
